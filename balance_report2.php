@@ -1,0 +1,324 @@
+<?php include 'db_connect.php' ?>
+<?php 
+
+// Debug: Check if variables are set
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+
+$month_of = isset($_GET['month_of']) ? $_GET['month_of'] : date('Y-m');
+$tenant_filter = isset($_GET['tenant_filter']) ? $_GET['tenant_filter'] : '';
+
+// Ensure landlordid is set (adjust based on your session)
+session_start();
+$landlordid = $_SESSION['landlord_id'] ?? ''; // Change this to your actual session variable
+
+if(empty($landlordid)) {
+    die("Landlord ID not found. Please check your session variables.");
+}
+
+$landlord = $conn->query("SELECT business_name FROM landlords WHERE landlord_id = '$landlordid'");
+if(!$landlord) {
+    die("Error fetching landlord: " . $conn->error);
+}
+$row33 = $landlord->fetch_assoc();
+$compannyname = $row33['business_name'];
+
+// Get account type
+$account_type_query = $conn->query("SELECT account_type FROM landlords WHERE landlord_id = '$landlordid'");
+$account_type_row = $account_type_query->fetch_assoc();
+$account_type = $account_type_row ? $account_type_row['account_type'] : 1;
+
+// Get list of tenants for filter dropdown
+$tenants = $conn->query("SELECT id, CONCAT(firstname, ' ', lastname) as name FROM tenants WHERE shopid = '$landlordid' ORDER BY name");
+if(!$tenants) {
+    die("Error fetching tenants: " . $conn->error);
+}
+
+?>
+<style>
+    .on-print{ display: none; }
+    table {
+        background-color: white;
+        opacity:1;
+        border-collapse: collapse;
+        width: 100%;
+        border: 1px solid #ddd;
+    }
+    th, td {
+        padding: 8px;
+        text-align: left;
+        border: 1px solid black;
+    }
+    th {
+        background-color: #f2f2f2;
+        color: black;
+    }
+    tr:hover {
+        background-color: #f5f5f5;
+    }
+    tbody {
+        color: black;
+    }
+    #report {
+        background-color: white; 
+    }
+</style>
+
+<div class="container-fluid">
+    <div class="col-lg-12">
+        <div class="card">
+            <div class="card-body">
+                <div class="col-md-12">
+                    <form id="filter-report">
+                        <div class="row form-group">
+                            <label class="control-label col-md-2 text-right">Month of: </label>
+                            <input type="month" name="month_of" class='form-control col-md-2' value="<?php echo $month_of ?>">
+                            
+                            <label class="control-label col-md-2 text-right">Filter Tenant: </label>
+                            <select name="tenant_filter" class="form-control col-md-2">
+                                <option value="">All Tenants</option>
+                                <?php while($tenant = $tenants->fetch_assoc()): ?>
+                                    <option value="<?php echo $tenant['id'] ?>" <?php echo $tenant_filter == $tenant['id'] ? 'selected' : '' ?>>
+                                        <?php echo $tenant['name'] ?>
+                                    </option>
+                                <?php endwhile; ?>
+                            </select>
+                            
+                            <button class="btn btn-sm btn-block btn-primary col-md-2 ml-1">Filter</button>
+                        </div>
+                    </form>
+                    <hr>
+                    <div class="row">
+                        <div class="col-md-12 mb-2">
+                            <button class="btn btn-sm btn-block btn-success col-md-2 ml-1 float-right" type="button" id="print">
+                                <i class="fa fa-print"></i> Print
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div id="report">
+                        <div class="on-print">
+                            <p><center><?php echo $compannyname; ?></center></p>
+                            <p><center>Rental Payments Report - Dues Only</center></p>
+                            <p><center>for the Month of <b><?php echo date('F, Y',strtotime($month_of.'-1')) ?></b></center></p>
+                            <?php if(!empty($tenant_filter)): ?>
+                                <p><center>Filtered by Tenant</center></p>
+                            <?php endif; ?>
+                        </div>
+                        
+                        <div class="row">
+                            <table class="table table-bordered">
+                                <thead>
+                                    <tr>
+                                        <th>#</th>
+                                        <th>Date</th>
+                                      <?php
+										switch($account_type){
+										    case 1:
+										        ?>
+										        <th>Tenant</th>
+										        <?php
+										        break;
+										        case 2:
+										            ?>
+										            <th>Buyer</th>
+										            <?php
+										            break;
+										            default:
+										                ?>
+										                <th>Buyer/Tenant</th>
+										                <?php
+										}
+										?>
+											<?php
+										switch($account_type){
+										    case 1:
+										        ?>
+										        <th>House  No</th>
+										        <?php
+										        break;
+										        case 2:
+										            ?>
+										            <th>Plot No</th>
+										            <?php
+										            break;
+										            default:
+										                ?>
+										                <th>House/Plot</th>
+										                <?php
+										}
+										?>
+                                        <th>Invoice</th>
+                                        <th>Amount</th>
+                                        <th>Balance</th>
+                                        <th>Month</th>
+                                        <th>Year</th>
+                                        <th>Date Created</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php 
+    $i = 1;
+    $tamount = 0;
+    $total_balance = 0;
+    
+    // Debug: Check what we're working with
+    echo "<!-- Debug: Month: $month_of, Tenant Filter: $tenant_filter, Landlord ID: $landlordid -->";
+    
+    // Get wallet balances for each tenant
+    $wallet_balances = [];
+    $wallet_query = "SELECT tenant_id, SUM(amount) as wallet_amount FROM wallet WHERE 1=1";
+    if(!empty($tenant_filter)) {
+        $wallet_query .= " AND tenant_id = '" . $conn->real_escape_string($tenant_filter) . "'";
+    }
+    $wallet_query .= " GROUP BY tenant_id";
+    
+    $query_wallets = $conn->query($wallet_query);
+    if(!$query_wallets) {
+        echo "<!-- Wallet query error: " . $conn->error . " -->";
+    } else {
+        while ($wallet = $query_wallets->fetch_assoc()) {
+            $wallet_balances[$wallet['tenant_id']] = (float)$wallet['wallet_amount'];
+            echo "<!-- Wallet found for tenant " . $wallet['tenant_id'] . ": " . $wallet['wallet_amount'] . " -->";
+        }
+    }
+    
+    // Get payments
+    $payment_query = "SELECT p.id AS payment_id, p.tenant_id, p.amount, p.InvoiceType, 
+        p.Year, p.Month, p.pay_status as status, p.date_created, 
+        p.pay_status, p.House_id as houseid 
+        FROM payments p 
+        WHERE date_format(p.date_created, '%Y-%m') = '$month_of' 
+        AND p.shopid = '$landlordid'";
+        
+    if(!empty($tenant_filter)) {
+        $payment_query .= " AND p.tenant_id = '$tenant_filter'";
+    }
+    
+    $payment_query .= " ORDER BY p.tenant_id, p.Year, FIELD(p.Month, 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December')";
+    
+    echo "<!-- Payment query: $payment_query -->";
+    
+    $payments = $conn->query($payment_query);
+    if(!$payments) {
+        echo "<!-- Payment query error: " . $conn->error . " -->";
+    }
+                                    // Store payments by tenant for processing
+                                    $payments_by_tenant = [];
+                                    if($payments->num_rows > 0) {
+                                        while($row = $payments->fetch_assoc()) {
+                                            $tenant_id = $row['tenant_id'];
+                                            if (!isset($payments_by_tenant[$tenant_id])) {
+                                                $payments_by_tenant[$tenant_id] = [];
+                                            }
+                                            $payments_by_tenant[$tenant_id][] = $row;
+                                        }
+                                    }
+                                    
+                                    // Process payments and calculate balances
+                                    if(!empty($payments_by_tenant)):
+                                        foreach($payments_by_tenant as $tenant_id => $tenant_payments):
+                                            $wallet_amount = isset($wallet_balances[$tenant_id]) ? $wallet_balances[$tenant_id] : 0;
+                                            $remaining_wallet = $wallet_amount;
+                                            
+                                            // Sort payments by date (oldest first)
+                                            usort($tenant_payments, function($a, $b) {
+                                                $monthOrder = [
+                                                    'January' => 1, 'February' => 2, 'March' => 3, 'April' => 4,
+                                                    'May' => 5, 'June' => 6, 'July' => 7, 'August' => 8,
+                                                    'September' => 9, 'October' => 10, 'November' => 11, 'December' => 12
+                                                ];
+                                                
+                                                if ($a['Year'] != $b['Year']) {
+                                                    return $a['Year'] - $b['Year'];
+                                                }
+                                                return $monthOrder[$a['Month']] - $monthOrder[$b['Month']];
+                                            });
+                                            
+                                            foreach($tenant_payments as $row):
+                                                $tamount += $row['amount'];
+                                                $total_due = (float)$row['amount'];
+                                                
+                                                // Apply wallet balance to oldest dues first
+                                                if ($remaining_wallet > 0) {
+                                                    if ($remaining_wallet >= $total_due) {
+                                                        // Wallet covers entire payment
+                                                        $balance = 0;
+                                                        $remaining_wallet -= $total_due;
+                                                    } else {
+                                                        // Wallet partially covers payment
+                                                        $balance = $total_due - $remaining_wallet;
+                                                        $remaining_wallet = 0;
+                                                    }
+                                                } else {
+                                                    // No wallet balance remaining
+                                                    $balance = $total_due;
+                                                }
+                                                
+                                                $total_balance += $balance;
+                                    ?>
+                                    <tr>
+                                        <td><?php echo $i++ ?></td>
+                                        <td><?php echo date('M d, Y', strtotime($row['date_created'])) ?></td>
+                                        <td>
+                                            <?php
+                                                $tenantid = $row['tenant_id'];
+                                                $tenant22 = $conn->query("SELECT CONCAT(firstname, ' ', lastname) AS name 
+                                                    FROM tenants WHERE id = '$tenantid'");
+                                                $tenant = $tenant22->fetch_assoc();
+                                                echo ucwords($tenant['name']);
+                                            ?>
+                                        </td>
+                                        <td><?php echo $row['houseid'] ?></td>
+                                        <td><?php echo $row['InvoiceType'] ?></td>
+                                        <td class="text-right"><?php echo number_format($row['amount'], 0) ?></td>
+                                        <td class="text-right"><?php echo number_format($balance, 0) ?></td>
+                                        <td><?php echo $row['Month'] ?></td>
+                                        <td><?php echo $row['Year'] ?></td>
+                                        <td><?php echo $row['date_created'] ?></td>
+                                    </tr>
+                                    <?php 
+                                            endforeach;
+                                        endforeach;
+                                    else: ?>
+                                        <tr>
+                                            <th colspan="10"><center>No Data Found</center></th>
+                                        </tr>
+                                    <?php endif; ?>
+                                </tbody>
+                                <tfoot>
+                                    <tr>
+                                        <th colspan="5">Total Amount Dues:</th>
+                                        <th class="text-right"><?php echo number_format($tamount, 0) ?></th>
+                                        <th class="text-right"><?php echo number_format($total_balance, 0) ?></th>
+                                        <th colspan="3"></th>
+                                    </tr>
+                                </tfoot>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+$(document).ready(function(){
+    $('#print').click(function(){
+        var _style = $('noscript').clone();
+        var _content = $('#report').clone();
+        var nw = window.open("", "_blank", "width=800,height=700");
+        nw.document.write(_style.html());
+        nw.document.write(_content.html());
+        nw.document.close();
+        nw.print();
+        setTimeout(function(){ nw.close(); }, 500);
+    });
+    
+    $('#filter-report').submit(function(e){
+        e.preventDefault();
+        location.href = 'index.php?page=balance_report&' + $(this).serialize();
+    });
+});
+</script>
